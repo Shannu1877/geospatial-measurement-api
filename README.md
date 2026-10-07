@@ -51,9 +51,10 @@ This service solves that problem by:
 - **Geodetic & Cartographic Accuracy**:
   - Automatic centroid extraction and UTM zone calculation ($1 \le \text{zone} \le 60$) with Northern/Southern hemisphere EPSG code selection ($32601-32660$ / $32701-32760$).
   - High-latitude Universal Polar Stereographic (UPS North `EPSG:32661` / UPS South `EPSG:32761`) fallbacks.
-  - Preservation of valid pre-projected metric coordinate reference systems (e.g. State Plane, National Grids, existing UTM).
+  - Preservation of valid pre-projected metric coordinate reference systems (e.g. State Plane in meters, National Grids, existing UTM).
+  - Automatic reprojection of non-metric projected coordinate systems (e.g. US Survey Feet `EPSG:2227`) to local UTM, guaranteeing output metrics are strictly in $m$ and $m^2$.
 - **Supported Geometries & Metrics**:
-  - `Polygon` $\rightarrow$ Area ($m^2$).
+  - `Polygon` $\rightarrow$ Area ($m^2$) with automatic topology repair for self-intersecting polygons (`shapely.make_valid`).
   - `MultiPolygon` $\rightarrow$ Total aggregate area ($m^2$).
   - `LineString` $\rightarrow$ Length ($m$).
   - `MultiLineString` $\rightarrow$ Total aggregate length ($m$).
@@ -63,12 +64,14 @@ This service solves that problem by:
   - Memory-safe chunked streaming upload with configurable byte ceilings (`MAX_UPLOAD_SIZE_MB`).
   - Magic byte MIME header verification to thwart extension spoofing.
   - Zip-Slip path traversal defense rejecting any entry containing relative path traversal (`..`), absolute roots, or drive letters.
+  - Decompression bomb defense with strict entry count limits (`1,000` files) and uncompressed size limits (`200 MB`).
+  - macOS metadata isolation automatically skipping `__MACOSX` resource forks and hidden files.
   - UUIDv4 on-disk filename isolation preventing path injection and directory disclosure.
   - Sanitized error envelopes preventing stack trace leakage to clients.
 - **Developer Experience**:
   - Interactive OpenAPI/Swagger documentation (`/docs`) and ReDoc (`/redoc`).
   - Health check probe (`/health`).
-  - 100% test pass rate with Pytest (33 unit, integration, and security test cases).
+  - **100% test pass rate** with **75 comprehensive automated tests** across 11 test modules yielding **91% code coverage**.
 
 ---
 
@@ -596,22 +599,31 @@ Standardized HTTP status codes:
 ---
 
 ## Automated Testing & Verification
-
-The project includes a comprehensive automated test suite with **33 test cases** covering every functional, geospatial, and security requirement.
-
+ 
+The project includes a comprehensive automated test suite with **75 test cases** covering every functional, geospatial, mathematical, and security requirement, yielding **91% overall code coverage**.
+ 
 ### Run Tests
 ```bash
 python -m pytest -v
 ```
-
-### Test Coverage Highlights
-- `tests/test_health.py`: Liveness probe verification.
-- `tests/test_file_validation.py`: Extension rejection, empty file rejection, malformed ZIP, missing `.shx`/`.dbf`, and upload size limit checks.
-- `tests/test_security.py`: Zip Slip path traversal exploits (`../../malicious.shp`) and absolute path rejection.
-- `tests/test_crs_service.py`: Global UTM zone calculation (Northern, Southern, Western, Eastern hemispheres, polar UPS fallbacks).
-- `tests/test_measurement_service.py`: Polygons, MultiPolygons, LineStrings, MultiLineStrings, Points, and unsupported GeometryCollections.
-- `tests/test_geospatial_accuracy.py`: **Proves that EPSG:4326 geometries are NOT measured in degrees** ($1^\circ \times 1^\circ$ box yields $\approx 1.23 \times 10^{10} m^2$, contrasting with naive $1.0\text{ deg}^2$).
-- `tests/test_api_files.py`: End-to-end integration tests for uploads, metadata querying, missing CRS rejection, corrupt KML handling, and trailing slash compatibility.
+ 
+### Run Tests with Coverage Report
+```bash
+python -m pytest --cov=app --cov-report=term-missing
+```
+ 
+### Test Suite Modules (11 Distinct Suites)
+- `tests/test_health.py`: Liveness and readiness probe verification.
+- `tests/test_upload.py`: Valid KML/Shapefile uploads, uppercase extensions, nested archives, trailing slash support.
+- `tests/test_file_info.py`: Metadata retrieval, status validation, 404 handling, malformed ID rejection.
+- `tests/test_measurements.py`: Feature measurement endpoints, MultiPolygons, MultiLineStrings, Points, GeometryCollections.
+- `tests/test_kml.py`: KML multi-geometry parsing, 3D coordinate elevation handling, property preservation, unicode characters, corrupted XML rejection.
+- `tests/test_shapefile.py`: Shapefile companion file validation (`.shp`, `.shx`, `.dbf`), missing `.prj` rejection, nested directories, macOS `__MACOSX` metadata isolation, multiple shapefile layer detection.
+- `tests/test_crs.py`: Global UTM zone calculation (Northern/Southern hemispheres, UPS polar fallbacks), Web Mercator re-projection, US survey feet conversion to meters, missing and invalid CRS rejection.
+- `tests/test_accuracy.py`: Ground-truth mathematical proofs: 100m square in UTM (10,000 $m^2$), EPSG:4326 metric area vs degree area, 3-4-5 triangle hypotenuse (500m), MultiPolygon additive areas, self-intersecting bowtie polygon repair.
+- `tests/test_security.py`: Zip Slip path traversal exploits (`../../malicious.shp`), absolute paths, Windows drive indicators, decompression bomb entry count limits, upload filename sanitization, and exception disclosure prevention.
+- `tests/test_validation.py`: Unsupported extension rejection (`.geojson`, `.txt`, `.exe`), empty file rejection, magic byte spoofing detection, and malformed ZIP header handling.
+- `tests/test_errors.py`: Unified error envelope consistency across HTTP 400, 404, 413, 422, and 500 status codes.
 
 ---
 

@@ -118,15 +118,23 @@ class CRSService:
             raise MissingCRSException("Cannot determine measurement projection for missing CRS.")
 
         # EPSG:3857 (Web Mercator) is projected but causes massive area/length distortion away from the equator
-        # (scale factor 1/cos(lat)^2). Therefore, we treat it like geographic coordinates and reproject to UTM.
+        # (scale factor 1/cos(lat)^2). Additionally, non-metric projected systems (e.g. feet) must be reprojected.
         source_epsg = source_crs.to_epsg()
         is_web_mercator = source_epsg in (3857, 900913)
 
-        if source_crs.is_projected and not is_web_mercator:
-            # Already a local or national projected CRS (e.g. UTM, State Plane, BNG)
+        is_metre_unit = True
+        if source_crs.is_projected:
+            try:
+                unit_name = (source_crs.axis_info[0].unit_name or "").lower()
+                is_metre_unit = any(m in unit_name for m in ["metre", "meter", "m"])
+            except Exception:
+                is_metre_unit = True
+
+        if source_crs.is_projected and not is_web_mercator and is_metre_unit:
+            # Already a suitable metric projected CRS (e.g. UTM, State Plane meters, British National Grid)
             return source_crs, False
 
-        # If source is geographic or Web Mercator, compute centroid to pick optimal UTM zone
+        # If source is geographic, Web Mercator, or non-metre projected, compute centroid to pick optimal UTM zone
         if geom.is_empty:
             # Default to WGS84 UTM Zone 31N if geometry is empty
             target_epsg = 32631
@@ -135,8 +143,8 @@ class CRSService:
         # Extract representative centroid
         centroid = geom.centroid
 
-        if is_web_mercator:
-            # Convert centroid from 3857 to 4326 to find lon/lat
+        if source_crs.is_projected:
+            # Convert centroid from projected coords to WGS84 (4326) to determine lon/lat
             to_wgs84 = pyproj.Transformer.from_crs(source_crs, pyproj.CRS.from_epsg(4326), always_xy=True)
             lon, lat = to_wgs84.transform(centroid.x, centroid.y)
         else:

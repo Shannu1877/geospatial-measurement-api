@@ -49,6 +49,7 @@ def create_sample_kml_bytes(
     <name>Test Survey Dataset</name>
     <Placemark>
       <name>Building A</name>
+      <description>Commercial Property</description>
       <Polygon>
         <outerBoundaryIs>
           <LinearRing>
@@ -59,12 +60,14 @@ def create_sample_kml_bytes(
     </Placemark>
     <Placemark>
       <name>Road 1</name>
+      <description>Primary Access Road</description>
       <LineString>
         <coordinates>{line_str}</coordinates>
       </LineString>
     </Placemark>
     <Placemark>
       <name>Survey Station</name>
+      <description>GPS Benchmark Point</description>
       <Point>
         <coordinates>{pt_str}</coordinates>
       </Point>
@@ -82,11 +85,13 @@ def create_shapefile_zip_bytes(
     omit_extensions: Optional[List[str]] = None,
     corrupt_zip: bool = False,
     include_traversal_member: Optional[str] = None,
+    subfolder: Optional[str] = None,
+    include_macos_metadata: bool = False,
 ) -> bytes:
     """Programmatically generate an in-memory Shapefile ZIP archive.
 
     Supports generating valid shapefiles, missing CRS, missing companion files,
-    path traversal payloads, and corrupt zip bytes.
+    nested folders, macOS metadata entries, path traversal payloads, and corrupt zip bytes.
     """
     if corrupt_zip:
         return b"PK\x03\x04" + b"CORRUPTED_ZIP_BINARY_DATA_PAYLOAD_HERE"
@@ -110,6 +115,7 @@ def create_shapefile_zip_bytes(
         gdf.to_file(shp_file, driver="ESRI Shapefile", engine="pyogrio")
 
         with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+            prefix = f"{subfolder}/" if subfolder else ""
             for f in temp_dir.glob("test_layer.*"):
                 ext = f.suffix.lower()
 
@@ -121,11 +127,51 @@ def create_shapefile_zip_bytes(
                 if omit_extensions and ext in omit_extensions:
                     continue
 
-                zf.write(f, arcname=f.name)
+                zf.write(f, arcname=f"{prefix}{f.name}")
+
+            if include_macos_metadata:
+                zf.writestr("__MACOSX/._test_layer.shp", b"MAC_RESOURCE_FORK_METADATA")
 
             if include_traversal_member:
                 # Malicious zip slip entry
                 zf.writestr(include_traversal_member, b"MALICIOUS_PAYLOAD")
 
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+def create_multi_shapefile_zip_bytes() -> bytes:
+    """Generate a ZIP archive containing multiple conflicting Shapefile datasets."""
+    poly1 = Polygon([(10.0, 50.0), (10.01, 50.0), (10.01, 50.01), (10.0, 50.01), (10.0, 50.0)])
+    gdf1 = gpd.GeoDataFrame([{"name": "Layer 1"}], geometry=[poly1], crs="EPSG:4326")
+
+    poly2 = Polygon([(20.0, 60.0), (20.01, 60.0), (20.01, 60.01), (20.0, 60.01), (20.0, 60.0)])
+    gdf2 = gpd.GeoDataFrame([{"name": "Layer 2"}], geometry=[poly2], crs="EPSG:4326")
+
+    buffer = io.BytesIO()
+    with tempfile.TemporaryDirectory() as td:
+        temp_dir = Path(td)
+        shp1 = temp_dir / "parcels.shp"
+        shp2 = temp_dir / "buildings.shp"
+
+        gdf1.to_file(shp1, driver="ESRI Shapefile", engine="pyogrio")
+        gdf2.to_file(shp2, driver="ESRI Shapefile", engine="pyogrio")
+
+        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+            for f in temp_dir.glob("parcels.*"):
+                zf.write(f, arcname=f.name)
+            for f in temp_dir.glob("buildings.*"):
+                zf.write(f, arcname=f.name)
+
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+def create_zip_with_many_files(count: int = 1005) -> bytes:
+    """Generate a ZIP archive with excessive entry count to test decompression bomb defense."""
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        for i in range(count):
+            zf.writestr(f"file_{i}.txt", b"x")
     buffer.seek(0)
     return buffer.getvalue()

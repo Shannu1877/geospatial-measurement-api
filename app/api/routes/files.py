@@ -40,9 +40,12 @@ async def upload_file(
     file_id, stored_path, ext, file_size = await FileService.save_and_validate_upload(file)
 
     # 2. Create initial database record with PROCESSING state
+    from app.utils.file_utils import sanitize_filename
+    clean_filename = sanitize_filename(file.filename or "unknown")
+
     file_record = FileService.create_initial_file_record(
         file_id=file_id,
-        filename=file.filename or "unknown",
+        filename=clean_filename,
         stored_path=stored_path,
         file_size_bytes=file_size,
         db=db,

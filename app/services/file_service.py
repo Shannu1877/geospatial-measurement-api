@@ -48,7 +48,10 @@ class FileService:
             InvalidFileException: For bad extension, empty file, or content spoofing.
             FileTooLargeException: When byte count exceeds configured limit.
         """
-        original_filename = upload_file.filename or ""
+        from app.utils.file_utils import sanitize_filename
+
+        raw_filename = upload_file.filename or ""
+        original_filename = sanitize_filename(raw_filename)
         ext = validate_file_extension(original_filename, settings.ALLOWED_EXTENSIONS)
 
         file_id = str(uuid.uuid4())
@@ -188,18 +191,22 @@ class FileService:
 
         except GeospatialAPIException as exc:
             db.rollback()
-            file_record.status = "FAILED"
-            file_record.error_message = exc.message
-            db.commit()
+            rec = db.query(FileRecord).filter(FileRecord.id == file_record.id).first()
+            if rec:
+                rec.status = "FAILED"
+                rec.error_message = exc.message
+                db.commit()
             logger.warning("File processing failed for ID %s: %s", file_record.id, exc.message)
             raise
 
         except Exception as exc:
             db.rollback()
             err_msg = f"Unexpected processing error: {str(exc)}"
-            file_record.status = "FAILED"
-            file_record.error_message = err_msg
-            db.commit()
+            rec = db.query(FileRecord).filter(FileRecord.id == file_record.id).first()
+            if rec:
+                rec.status = "FAILED"
+                rec.error_message = err_msg
+                db.commit()
             logger.exception("Unexpected exception processing file ID %s", file_record.id)
             raise CorruptGeospatialFileException(err_msg) from exc
 

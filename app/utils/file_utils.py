@@ -18,6 +18,24 @@ ZIP_MAGIC_SIGNATURES = [
     b"PK\x07\x08",  # Spanned zip header
 ]
 
+# Security limits for ZIP archives to prevent decompression bombs and resource exhaustion
+MAX_ZIP_ENTRIES = 1000
+MAX_ZIP_UNCOMPRESSED_BYTES = 200 * 1024 * 1024  # 200 MB
+
+
+def sanitize_filename(filename: str) -> str:
+    """Sanitize uploaded filename to prevent directory traversal and metadata attacks.
+
+    Strips directory separators, relative prefixes ('..'), and path characters.
+    """
+    if not filename:
+        return "uploaded_file"
+    # Replace backslashes with forward slashes, then take basename
+    clean = os.path.basename(filename.replace("\\", "/"))
+    # Remove any leading dots or illegal characters
+    clean = clean.lstrip(".")
+    return clean if clean else "uploaded_file"
+
 
 def validate_file_extension(filename: str, allowed_extensions: List[str]) -> str:
     """Validate file extension against allowed whitelist.
@@ -29,7 +47,8 @@ def validate_file_extension(filename: str, allowed_extensions: List[str]) -> str
             f"Uploaded file has no extension. Allowed formats: {', '.join(allowed_extensions)}"
         )
 
-    ext = Path(filename).suffix.lower()
+    clean_name = sanitize_filename(filename)
+    ext = Path(clean_name).suffix.lower()
     allowed_normalized = [e.lower() for e in allowed_extensions]
 
     if ext not in allowed_normalized:
@@ -59,8 +78,19 @@ def validate_file_content(header: bytes, extension: str) -> None:
             )
 
 
+def is_system_or_metadata_file(name: str) -> bool:
+    """Identify operating system metadata files (e.g. macOS __MACOSX, Windows Thumbs.db)."""
+    norm = name.replace("\\", "/")
+    parts = norm.split("/")
+    if any(p.startswith(".") for p in parts if p):
+        return True
+    if "__MACOSX" in parts:
+        return True
+    return False
+
+
 def inspect_and_validate_zip(zip_path: Path) -> List[str]:
-    """Inspect ZIP archive contents for path traversal attempts and valid structure.
+    """Inspect ZIP archive contents for path traversal attempts, zip bombs, and valid structure.
 
     Returns list of normalized file paths inside the archive.
     """
@@ -70,19 +100,39 @@ def inspect_and_validate_zip(zip_path: Path) -> List[str]:
             if not namelist:
                 raise InvalidFileException("The uploaded ZIP archive is empty.")
 
+            # Defense against Zip Bomb (excessive entry count)
+            if len(namelist) > MAX_ZIP_ENTRIES:
+                raise SecurityViolationException(
+                    f"ZIP archive contains too many entries ({len(namelist)} > {MAX_ZIP_ENTRIES})."
+                )
+
             # Test ZIP integrity
             corrupt_file = zf.testzip()
             if corrupt_file:
                 raise InvalidFileException(f"Corrupt entry detected in ZIP archive: {corrupt_file}")
 
-            # Inspect against path traversal attacks (Zip Slip)
-            for name in namelist:
+            total_uncompressed_bytes = 0
+
+            # Inspect against path traversal attacks (Zip Slip) and uncompressed size limits
+            for info in zf.infolist():
+                name = info.filename
+                total_uncompressed_bytes += info.file_size
+
+                if total_uncompressed_bytes > MAX_ZIP_UNCOMPRESSED_BYTES:
+                    raise SecurityViolationException(
+                        f"ZIP archive exceeds maximum allowable uncompressed size ({MAX_ZIP_UNCOMPRESSED_BYTES // (1024*1024)}MB)."
+                    )
+
                 # Disallow absolute paths, parent directory traversals, and Windows volume letters
                 if name.startswith("/") or name.startswith("\\"):
                     raise SecurityViolationException(
                         f"Malicious entry detected in ZIP archive (absolute path): {name}"
                     )
-                if ".." in name.split("/") or ".." in name.split("\\"):
+
+                # Check path tokens for traversal
+                norm_name = name.replace("\\", "/")
+                tokens = [t for t in norm_name.split("/") if t]
+                if ".." in tokens:
                     raise SecurityViolationException(
                         f"Malicious entry detected in ZIP archive (path traversal '..'): {name}"
                     )
@@ -102,19 +152,29 @@ def locate_and_validate_shapefile_components(namelist: List[str]) -> str:
 
     Returns the archive entry name of the primary .shp file.
     """
-    shp_files = [n for n in namelist if n.lower().endswith(".shp")]
+    # Filter out macOS and hidden system files
+    clean_entries = [n for n in namelist if not is_system_or_metadata_file(n)]
+
+    shp_files = [n for n in clean_entries if n.lower().endswith(".shp")]
     if not shp_files:
         raise InvalidFileException(
             "The uploaded ZIP does not contain a Shapefile (.shp file not found)."
         )
 
-    # Use the first .shp file found (in root or single subfolder)
+    # Disallow archives with multiple conflicting shapefile layers
+    if len(shp_files) > 1:
+        shp_names = [Path(s).name for s in shp_files]
+        raise InvalidFileException(
+            f"ZIP archive contains multiple Shapefile datasets ({', '.join(shp_names)}). "
+            "Please upload an archive with a single Shapefile dataset."
+        )
+
     primary_shp = shp_files[0]
     base_prefix = primary_shp[:-4]  # Path without .shp
 
     # Find companion files ignoring case
-    shx_found = any(n.lower() == f"{base_prefix.lower()}.shx" for n in namelist)
-    dbf_found = any(n.lower() == f"{base_prefix.lower()}.dbf" for n in namelist)
+    shx_found = any(n.lower() == f"{base_prefix.lower()}.shx" for n in clean_entries)
+    dbf_found = any(n.lower() == f"{base_prefix.lower()}.dbf" for n in clean_entries)
 
     missing = []
     if not shx_found:
@@ -143,6 +203,10 @@ def safe_extract_zip(zip_path: Path, extract_dir: Path) -> Path:
 
     with zipfile.ZipFile(zip_path, "r") as zf:
         for member in zf.infolist():
+            # Skip operating system metadata files
+            if is_system_or_metadata_file(member.filename):
+                continue
+
             # Resolve destination target
             target_path = (extract_dir_resolved / member.filename).resolve()
 

@@ -32,6 +32,10 @@ def sanitize_property_value(val: Any) -> Any:
         return val
     if hasattr(val, "isoformat"):
         return val.isoformat()
+    if isinstance(val, (bytes, bytearray)):
+        return val.decode("utf-8", errors="replace")
+    if hasattr(val, "tolist"):
+        return [sanitize_property_value(x) for x in val.tolist()]
     return str(val)
 
 
@@ -139,7 +143,7 @@ class GeospatialService:
 
         for idx, row in gdf.iterrows():
             geom: Optional[BaseGeometry] = row.geometry if hasattr(row, "geometry") else None
-            geom_type = geom.geom_type if (geom is not None and not geom.is_empty) else "Unknown"
+            geom_type = geom.geom_type if geom is not None else "None"
 
             # Extract row properties
             props = row.drop(labels=["geometry"], errors="ignore").to_dict()

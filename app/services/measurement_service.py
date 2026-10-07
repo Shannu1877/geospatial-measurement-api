@@ -42,11 +42,21 @@ class MeasurementService:
             logger.debug("Geometry is empty or None")
             return None, MeasurementStatus.UNSUPPORTED
 
-        geom_type = geom.geom_type
-
         # Point types require no measurement by design
-        if geom_type in cls.POINT_TYPES:
+        if geom.geom_type in cls.POINT_TYPES:
             return None, MeasurementStatus.COMPLETED
+
+        # Repair self-intersecting or topologically invalid geometries
+        if not geom.is_valid:
+            try:
+                import shapely
+                repaired = shapely.make_valid(geom)
+                if not repaired.is_empty:
+                    geom = repaired
+            except Exception as e:
+                logger.warning("Could not repair invalid geometry: %s", e)
+
+        geom_type = geom.geom_type
 
         # Check for unsupported geometries (e.g. GeometryCollection)
         if geom_type not in cls.AREA_TYPES and geom_type not in cls.LENGTH_TYPES:
