@@ -489,7 +489,7 @@ curl -X GET http://localhost:8000/api/files/60f30bdc-ae0d-410f-bbeb-d35e5b470a1b
 
 ### 1. Clone & Navigate
 ```bash
-git clone https://github.com/your-username/geospatial-measurement-api.git
+git clone https://github.com/Shannu1877/geospatial-measurement-api.git
 cd geospatial-measurement-api
 ```
 
